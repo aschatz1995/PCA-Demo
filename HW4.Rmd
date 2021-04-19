@@ -1,0 +1,220 @@
+---
+title: "HW4"
+output: html_document
+---
+### Question 9.1
+``` {r}
+#load factoextra library for visualization
+library(factoextra)
+
+#read in data and create df without response variable
+crimedf <- read.table('uscrime.txt', header = TRUE)
+factors <- crimedf[,-16]
+
+#run PCA on predictor variables
+pca <- prcomp(factors, scale. = TRUE )
+
+#Scree plot to visuzalize percent of variance explained by each principal component
+variances <- fviz_eig(pca)
+variances
+
+summary(pca)
+
+
+```
+These visualizations show the percentage of the variance explained by each principal component. This gives me an idea of how many principal components i should include in my regression.
+
+I'll start with the first 6 principal components since they 90% of the variance in the data.
+
+``` {r}
+#concatenate response with first 6 Principal Components
+firstsix <- pca$x[ ,1:6]
+sixandresponse = data.frame(cbind(firstsix,Crime = crimedf[,16]))
+head(sixandresponse)
+
+#run linear regression using the 6 principal components as regressors
+regression <- lm(Crime~.,sixandresponse)
+
+summary(regression)
+
+#multiply the coefficients of the regression by the rotation matrix to get the coefficients in terms of the original variables
+Z <- as.matrix(regression$coefficients[-1])
+V <- as.matrix(pca$rotation[,1:6])
+X <- V %*% Z
+
+#unscale the intercept and coefficients
+intercept <- regression$coefficients[1]-sum(X * (pca$center /pca$scale))
+coef <- X/pca$scale
+
+#new data for prediction
+new <- data.frame( M = 14.0 , So = 0.0 , Ed = 10.0 , Po1 = 12.0,
+                   Po2 = 15.5 , LF = 0.640 , M.F = 94.0 , Pop = 150.0 , 
+                   NW = 1.1 , U1 = 0.120 , U2 = 3.6 , Wealth = 3200.0 , 
+                   Ineq = 20.1 , Prob = 0.04 , Time = 39.0 )
+
+prediction <- intercept + (as.matrix(new) %*% coef)
+
+prediction
+```
+
+I use the pcr function from the pls package to perform Primary Component Regression to confirm my answer
+
+``` {r}
+library(pls)
+pcrtest <- pcr(Crime~., data = crimedf,ncomp = 6,scale = TRUE, )
+
+prediction <- predict(pcrtest , new, ncomp = 6)
+prediction
+```
+The formula for my regression can be found as:
+```{r, echo = FALSE}
+saying<-paste('Y = ',round(intercept,3), '+')
+for (i in seq(1:(length(coef)-1))){
+  saying <- paste(saying,round(coef[i],3),rownames(coef)[i],'+')
+}
+
+saying <- paste(saying,round(coef[length(coef)],3),rownames(coef)[length(coef)])
+
+saying
+```
+Comparing the quality of the model to a basic regression
+``` {r}
+naive <- lm(Crime~.,crimedf )
+summary(naive)
+summary(regression)
+
+```
+
+The R^2 for my Primary Component Regression is .66 while the R^2 for my plain linear regression is .80, indicating it is worse than plain. However I think this is misleading since both models are likely overfit.
+
+I would like to learn strategies to investigate this further (hopefully reading some homework solutions will help). Because both models are likely overfit, and these estimates of quality are not valid, I would most likely choose the PCR model since it is simpler and still captures 90% of the variance in the training set.
+
+### Question 10.1
+
+#### a)
+
+``` {r}
+library(tree)
+
+tree <- tree(Crime~., crimedf)
+summary(tree)
+
+plot(tree)
+text(tree)
+
+set.seed(2)
+
+tree_cv = cv.tree(tree, K = 5)
+plot(tree_cv$size, sqrt(tree_cv$dev / nrow(crimedf)), type = "b",
+     xlab = "Tree Size", ylab = "CV-RMSE")
+```
+
+
+
+Because the root mean squared error is minimized with Tree Size of 6 I will prune to six leaves
+
+``` {r}
+tree_prune = prune.tree(tree, best = 6)
+summary(tree_prune)
+```
+
+
+### b)
+
+``` {r}
+library(randomForest)
+#random forests
+
+
+set.seed(100)
+sample <- sample(nrow(crimedf), round(0.8*nrow(crimedf)), replace = FALSE)
+train <- crimedf[sample,]
+test <- crimedf[-sample,]
+
+randomforest <- randomForest(Crime~.,train, ntree = 200)
+summary(randomforest)
+
+plot(randomforest)
+
+```
+
+It looks like the error term reaches a limit after around 50 or so trees. This might be a good starting point in order to further refine the model
+
+### Question 10.2
+
+*Describe a situation or problem from your job, everyday life, current events, etc., for which a logistic regression model would be appropriate. List some (up to 5) predictors that you might use.*
+
+Health professionals/statisticians could use a logistic regression to find out the odds someone would contract some disease, such as diabetes in their lifetime. Predictors could be gender, age, body mass index, blood test results, etc.
+
+
+### Question 10.3
+
+``` {r}
+# logistic regression
+library(fastDummies)
+
+#read in data
+germancredit <- read.table('germancredit.txt')
+
+#convert response variable to binary, and categorical variables to dummy binary variables
+germancredit$V21[germancredit$V21 == 1] <- 0
+germancredit$V21[germancredit$V21 == 2] <- 1
+germancredit <- dummy_cols(germancredit, remove_selected_columns = TRUE, remove_most_frequent_dummy  = TRUE)
+
+#create train and test set
+set.seed(10)
+sample <- sample(nrow(germancredit), round(0.8*nrow(germancredit)), replace = FALSE)
+train <- germancredit[sample,]
+test <- germancredit[-sample,]
+
+#Create logistic model
+logistic <- glm(formula = V21~. , train, family=binomial(link='logit'))
+
+
+#Create confusion matrix, CM
+prediction <- (predict.glm(logistic, test, type = 'response'))
+threshold = .5
+actual <- test$V21
+pred <- round(prediction-threshold + .5)
+CM <- table(actual,pred)
+
+CM
+```
+
+
+I will now try changing the rounding threshold to reduce a cost function. This cost function will be the # of good customers falsely identified as bad + 5 * the # bad customers falsely identified as good
+
+``` {r}
+cost <- CM[2,1] + 5*CM[1,2]
+
+getcost <- function(t=.5,model = logistic, data = test) {
+  prediction <- (predict.glm(model, data, type = 'response'))
+  
+  actual <- test$V21
+  
+  pred <- round(prediction-t + .5)
+  CM <- table(actual,pred)
+  
+  cost <- CM[2,1] + 5*CM[1,2]
+  
+  return(cost)
+}
+
+for (i in seq(.5,.95,.01)){
+  cat('Threshold:',i,'Cost:',getcost(t=i),'\n')
+}
+```
+
+So I will choose a threshold of .83. My final model using this threshold can be seen below:
+
+``` {r}
+prediction <- (predict.glm(logistic, test, type = 'response'))
+threshold = .83
+actual <- test$V21
+pred <- round(prediction-threshold + .5)
+CM <- table(actual,pred)
+
+CM
+
+cat('Accuracy on training set:', sum(diag(CM))/sum(CM))
+```
